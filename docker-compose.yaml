@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  pokerbot:
+    container_name: pokerbot
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: poker-chatbot
+    env_file:
+      - .env
+    ports:
+      - 3000:3000
+    # entrypoint: sh -c "pnpm install && pnpm run build && pnpm run dev"
+    working_dir: /pokerbot
+    volumes:
+      - .:/pokerbot
