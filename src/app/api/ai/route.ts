@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { getDatabaseConnectionToCollection } from '@/app/utils/database';
 import { initializeOpenAIEmbeddings, initializeChatOpenAI, initializeChatAnthropic } from '@/app/utils/model'
-import { initializeMongoDBVectorStore } from '@/app/utils/vectorStore'
+import { enhancedRetriever, initializeMongoDBVectorStore } from '@/app/utils/vectorStore'
 import { MongoDBChatMessageHistory } from '@langchain/mongodb';
 import { assignRetrieverToRunnable, getRunnableWithMessageHistory, getRunnableFromProperties } from '@/app/utils/runnables';
 import {
@@ -34,7 +34,8 @@ const RAG_SYSTEM_PROMPT = `
 
   SITUATION 1
   When asked to provide a summary of a specific podcast episode, search for that episode in the metadata of the provided context.
-  For example, if the user asks for a summary on episode 1, you should search for 'Thinking Poker Daily E1...'
+  For example, if the user asks for a summary of episode 15, you should search for documents with metadata.episode_number equal to 15.
+  If you are not able to find it, you can also try to look at metadata.episode_name and search for documents that begin with Thinking Poker Daily E15. 
   Do a thorough search in the context for the asked episode before saying you couldn't find it.
   If you're able to find the specific episode, iterate through the content and summarize it to the user.
 
@@ -101,8 +102,6 @@ const RAG_SYSTEM_PROMPT = `
   Every answer coming from you should as if Andrew and Carlos were speaking to the user directly.
 `
 
-const MAX_RETRIEVED_DOCS = 50;
-
 export async function POST(request: Request) {
     const body = await request.json()
     const bodySchema = z.object({
@@ -135,27 +134,20 @@ export async function POST(request: Request) {
 
         const embeddings = initializeOpenAIEmbeddings()
         const vectorStore = initializeMongoDBVectorStore(embeddings, documentsCollection)
-        const retriever = vectorStore.asRetriever({
-            filter: {
-                preFilter: {
-                    episode: {
-                        "$eq": prompt 
-                    }
-                }
-            }
-        });
-
+        
+        const retriever = async (query: string) => enhancedRetriever(vectorStore, query);
+        
         const questionRunnable = getRunnableFromProperties(STANDALONE_PROMPT_TEMPLATE, model)
         const retrieverRunnable = assignRetrieverToRunnable(questionRunnable, retriever)
         const ragRunnable = getRunnableFromProperties(RAG_SYSTEM_PROMPT, model, retrieverRunnable)
-
+        
         const chatHistory = new MongoDBChatMessageHistory({
             collection: historyCollection,
             sessionId
         })
-
+        
         const RunnableWithMessageHistory = getRunnableWithMessageHistory(ragRunnable, chatHistory)
-
+        
         const stream = await RunnableWithMessageHistory.stream({ question: prompt }, { configurable: { sessionId: sessionId } })
 
         return new NextResponse(stream, {
