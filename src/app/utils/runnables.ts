@@ -1,5 +1,4 @@
 import { BaseListChatMessageHistory } from "@langchain/core/chat_history"
-import { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import { StringOutputParser } from "@langchain/core/output_parsers"
 import { ChatPromptTemplate, MessagesPlaceholder } from "@langchain/core/prompts"
 import {
@@ -8,8 +7,8 @@ import {
   RunnableSequence,
   RunnableWithMessageHistory
 } from "@langchain/core/runnables"
-import { VectorStoreRetriever } from "@langchain/core/vectorstores"
 import { formatDocumentsAsString } from "langchain/util/document"
+import { Document } from '@langchain/core/documents';
 
 export function getRunnableFromProperties(
   prompt: string,
@@ -31,10 +30,13 @@ export function getRunnableFromProperties(
 
 export function assignRetrieverToRunnable(
   chain: RunnableSequence,
-  retriever: VectorStoreRetriever
+  retriever: (query: string) => Promise<Document[]>
 ): RunnablePassthrough<any> {
   return RunnablePassthrough.assign({
-    context: chain.pipe(retriever).pipe(formatDocumentsAsString)
+    context: async (input: any) => {
+      const docs = await retriever(input.question);
+      return formatDocumentsAsString(docs);
+    }
   })
 }
 

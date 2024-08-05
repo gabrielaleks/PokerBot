@@ -15,6 +15,9 @@ async function processPokerFile(file: File): Promise<Document[]> {
     const fileContent = docs[0].pageContent;
     const fileId = new ObjectId().toString();
 
+    const episodeNumberMatch = file.name.match(/E(\d+)/);
+    const episodeNumber = episodeNumberMatch ? episodeNumberMatch[1] : "unknown";
+    
     const textSplitter = new RecursiveCharacterTextSplitter({
         chunkSize: 1500,
         chunkOverlap: 300,
@@ -25,16 +28,16 @@ async function processPokerFile(file: File): Promise<Document[]> {
         [fileContent],
         [
             {
-                'episode': file.name,
+                'episode_number': parseInt(episodeNumber),
+                'episode_name': file.name,
                 'file_id': fileId
             }
         ],
         {
-            chunkHeader: `EPISODE NAME: ${file.name}\n\n`,
+            chunkHeader: `EPISODE ${episodeNumber}: ${file.name}\n\n`,
             appendChunkOverlapHeader: true
         }
     );
 
     return splitDocs;
-
 }
