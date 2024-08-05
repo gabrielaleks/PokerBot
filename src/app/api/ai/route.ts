@@ -135,16 +135,16 @@ export async function POST(request: Request) {
         const embeddings = initializeOpenAIEmbeddings()
         const vectorStore = initializeMongoDBVectorStore(embeddings, documentsCollection)
         
-        const retriever = async (query: string) => enhancedRetriever(vectorStore, query);
-        
-        const questionRunnable = getRunnableFromProperties(STANDALONE_PROMPT_TEMPLATE, model)
-        const retrieverRunnable = assignRetrieverToRunnable(questionRunnable, retriever)
-        const ragRunnable = getRunnableFromProperties(RAG_SYSTEM_PROMPT, model, retrieverRunnable)
-        
         const chatHistory = new MongoDBChatMessageHistory({
             collection: historyCollection,
             sessionId
         })
+
+        const retriever = async (query: string) => enhancedRetriever(vectorStore, query, chatHistory);
+        
+        const questionRunnable = getRunnableFromProperties(STANDALONE_PROMPT_TEMPLATE, model)
+        const retrieverRunnable = assignRetrieverToRunnable(questionRunnable, retriever)
+        const ragRunnable = getRunnableFromProperties(RAG_SYSTEM_PROMPT, model, retrieverRunnable)
         
         const RunnableWithMessageHistory = getRunnableWithMessageHistory(ragRunnable, chatHistory)
         
