@@ -6,6 +6,8 @@ WORKDIR /pokerbot
 
 RUN npm install -g pnpm@${PNPM_VERSION}
 
+RUN pnpm install
+
 RUN apt-get update && apt-get install -y python3 python3-pip python3.11-venv
 WORKDIR /pokerbot/src/app/api/ai/embed/audio
 RUN python3 -m venv venv
@@ -14,4 +16,4 @@ ENV PATH="/pokerbot/src/app/api/ai/embed/audio/venv/bin:$PATH"
 
 WORKDIR /pokerbot
 
-ENTRYPOINT pnpm install && pnpm run dev
+ENTRYPOINT pnpm run build && pnpm start
