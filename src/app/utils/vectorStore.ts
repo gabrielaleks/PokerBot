@@ -1,57 +1,89 @@
 import { MongoDBAtlasVectorSearch, MongoDBChatMessageHistory } from '@langchain/mongodb';
-import { OpenAI, OpenAIEmbeddings } from '@langchain/openai';
+import { ChatOpenAI, OpenAIEmbeddings } from '@langchain/openai';
 import { Collection } from 'mongodb';
 import { Document } from '@langchain/core/documents';
+import { ChatPromptTemplate } from '@langchain/core/prompts';
+import { JsonOutputParser } from '@langchain/core/output_parsers';
 
 export function initializeMongoDBVectorStore(
-	embeddings: OpenAIEmbeddings,
-	collection: Collection
+    embeddings: OpenAIEmbeddings,
+    collection: Collection
 ) {
-	return new MongoDBAtlasVectorSearch(embeddings, {
-		collection,
-		indexName: "vector_index",
-		textKey: "text",
-		embeddingKey: "embedding"
-	});
+    return new MongoDBAtlasVectorSearch(embeddings, {
+        collection,
+        indexName: "vector_index",
+        textKey: "text",
+        embeddingKey: "embedding"
+    });
 }
 
 export async function enhancedRetriever(
-	vectorStore: MongoDBAtlasVectorSearch,
-	query: string,
-	chatHistory: MongoDBChatMessageHistory,
-	k: number = 20
+    vectorStore: MongoDBAtlasVectorSearch,
+    query: string,
+    k: number = 50
 ): Promise<Document[]> {
-	const messages = await chatHistory.getMessages();
-	const recentMessages = messages.slice(-3).map(msg => msg.content).join(" ");
-	const combinedText = `HISTORY:\n${recentMessages}\n\nQUERY:\n${query}`;
+    const llm = new ChatOpenAI({
+        model: "gpt-4o",
+        openAIApiKey: process.env.OPENAI_API_KEY,
+        temperature: 0,
+    });
+    const template = `
+        Analyze the following context and query:
+        {query}
+        
+        1. IF the user mentions episode numbers, extract all episode numbers mentioned.
+        2. IF the user mentions episode tags, extract tags mentioned.
+        3. IF the user's message doesn't fit any of the conditions above, return an empty json.
 
-	// Extract episode numbers with AI
-	const llm = new OpenAI({ temperature: 0 });
-	const aiResponse = await llm.invoke(
-		`Extract all episode numbers mentioned in the following context and query.
-		Only respond with a comma-separated list of numbers, or "None" if no episode numbers are mentioned: "${combinedText}"`
-	);
-	let episodeNumbers = extractNumbers(aiResponse);
+        Respond in JSON format:
+        {{
+            "episodeNumbers": [list of numbers or empty array],
+            "episodeTags": [list of identified tags or empty array]
+        }}
+    `;
 
-	let results: Document[] = [];
+    const prompt = ChatPromptTemplate.fromTemplate(template);
+    const outputParser = new JsonOutputParser();
+    const llmChain = prompt.pipe(llm).pipe(outputParser);
+    const { episodeNumbers, episodeTags } = await llmChain.invoke({ query });
 
-	if (episodeNumbers.length > 0) {
-		results = await vectorStore.similaritySearch(query, k, {
-			preFilter: {
-				"episode_number": { "$in": episodeNumbers }
-			}
-		});
-	}
+    let preFilter: any = {};
 
-	// If no results or no episode number provided, fall back to regular semantic search
-	if (results.length === 0) {
-		results = await vectorStore.similaritySearch(query, k);
-	}
+    if (episodeNumbers.length > 0) {
+        preFilter.episode_number = { "$in": episodeNumbers };
+    }
 
-	return results;
-}
+    if (episodeTags.length > 0) {
+        preFilter.episode_tags = { "$in": episodeTags.map((tag: string) => tag.toLowerCase()) };
+    }
 
-function extractNumbers(text: string): number[] {
-	const numbers = text.match(/\d+/g);
-	return numbers ? numbers.map(Number) : [];
+    let results: Document[] = [];
+
+    if (Object.keys(preFilter).length > 0) {
+        results = await vectorStore.similaritySearch(query, k, { preFilter });
+    } else {
+        results = await vectorStore.similaritySearch(query, k);
+    }
+
+    // Merge episode tags into pageContent
+    results = results.map(result => {
+        const tags = result.metadata.episode_tags || [];
+        const tagString = tags.length > 0 ? `Tags: ${tags.join(', ')}` : '';
+        result.pageContent = `${result.pageContent}\n\n${tagString}`;
+        return result;
+    });
+
+    console.log(results);
+
+    //// Logging
+    console.log('From user query: Episode numbers -> ' + episodeNumbers);
+    console.log('From user query: Episode tags -> ' + episodeTags.map((tag: string) => tag.toLowerCase()));
+    console.log("\n--- Episodes filtered: ---")
+    for (const result of results) {
+        console.log(result.metadata.episode_name);
+    }
+    console.log("--------------------------\n")
+    ////
+
+    return results;
 }

@@ -2,7 +2,7 @@ import { initializeOpenAIEmbeddings } from '@/app/utils/model'
 import { NextResponse } from 'next/server'
 import { getDatabaseConnectionToCollection } from '@/app/utils/database';
 import { initializeMongoDBVectorStore } from '@/app/utils/vectorStore'
-import { generateSplitDocumentsFromFile } from '@/app/utils/textSplitter';
+import { generateDocumentsFromFile } from '@/app/utils/textSplitter';
 
 export async function POST(request: Request) {
   const data = request.formData()
@@ -13,11 +13,11 @@ export async function POST(request: Request) {
   }
 
   try {
-    const splitDocs = await generateSplitDocumentsFromFile(file)
+    const docs = await generateDocumentsFromFile(file)
     const embeddings = initializeOpenAIEmbeddings()
     const collection = await getDatabaseConnectionToCollection('embeddings');
     const vectorStore = initializeMongoDBVectorStore(embeddings, collection)
-    await vectorStore.addDocuments(splitDocs)
+    await vectorStore.addDocuments(docs)
   } catch (error) {
     console.error('Error during embedding:', error);
     return NextResponse.json({ message: 'An error occurred during embedding.' }, { status: 400 });
