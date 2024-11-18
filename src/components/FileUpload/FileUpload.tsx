@@ -3,7 +3,7 @@ import {ChangeEvent} from 'react'
 import {cn} from '@/lib/utils'
 import Tooltip from '@mui/material/Tooltip';
 
-const ALLOWED_FILE_TYPES = ['.md', '.txt', '.wav', '.json']
+const ALLOWED_FILE_TYPES = ['.md', '.txt', '.json']
 
 type Props = {
   id: string

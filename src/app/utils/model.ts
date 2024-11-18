@@ -15,8 +15,8 @@ export function initializeChatOpenAI(modelName: string) {
     temperature: 0,
     // If true, tokens will be sent as server-sent events as they become available
     streaming: true,
-    // Max number of tokes to be generated in chat completion
-    maxTokens: 2048
+    // Max number of tokens to be generated in chat completion
+    maxTokens: 4096
   });
 }
 
