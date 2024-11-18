@@ -256,6 +256,7 @@ export const PRE_DEFINED_TAGS = `
 - storytime
 - streamed
 - suited
+- river
 - tipping
 - top pair
 - training product

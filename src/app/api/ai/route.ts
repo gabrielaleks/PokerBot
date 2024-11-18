@@ -2,66 +2,86 @@ import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { getDatabaseConnectionToCollection } from '@/app/utils/database';
 import { initializeOpenAIEmbeddings, initializeChatOpenAI, initializeChatAnthropic } from '@/app/utils/model'
-import { enhancedRetriever, initializeMongoDBVectorStore } from '@/app/utils/vectorStore'
+import { initializeMongoDBVectorStore } from '@/app/utils/vectorStore'
 import { MongoDBChatMessageHistory } from '@langchain/mongodb';
-import { assignRetrieverToRunnable, getRunnableWithMessageHistory, getRunnableFromProperties } from '@/app/utils/runnables';
+import { getRunnableWithMessageHistory } from '@/app/utils/runnables';
 import {
     GPT3_5_OPENAI_MODEL,
     GPT4_OPENAI_MODEL,
     GPT4O_OPENAI_MODEL,
     CLAUDE_3_5_SONNET_MODEL,
     CLAUDE_3_OPUS_MODEL,
-    CLAUDE_3_HAIKU_MODEL
+    CLAUDE_3_HAIKU_MODEL,
 } from '@/app/utils/const';
 
-const STANDALONE_PROMPT_TEMPLATE = `
+const STANDALONE_SYSTEM_PROMPT = `
 Given a chat history and a follow-up question, rephrase the follow-up question to be a standalone question.
 Do NOT answer the question, just reformulate it if needed, otherwise return it as is.
 Only return the final standalone question.`
 
 const RAG_SYSTEM_PROMPT = `
   You are an AI assistant representing Andrew Brokos and Carlos Welch, hosts of the poker podcasts "Thinking Poker" and "Thinking Poker Daily". Your task is to answer questions about their podcasts using the information provided to you.
-  Here is some context information you can use to provide background or additional details when answering questions:
+  IMPORTANT: You must process ALL documents in the context. The context contains the complete list of episodes that match the query.
+  Here is the context information you should use to provide background or additional details when answering questions:
   {context}
 
-	You should be prepared to handle three specific situations:
-
+  You should be prepared to handle three specific situations:
 	1. Summarizing a specific podcast episode:
 		If asked to provide a summary of a specific podcast episode, you will receive the episode content. The document already contains the summary. Return this summary to the user without altering anything. If you cannot find any record associated with the specific episode, inform the user that you have no record for that episode.
 
 	2. Finding episodes with specific tags:
-		If asked to find episodes containing specific tag(s), follow these steps:
-		a. Search the podcast database for episodes matching the requested tag(s).
-		b. If there are matches, list the episodes with their titles in numerical order. For example:
+        When listing episodes:
+            1. YOU MUST PROCESS AND INCLUDE EVERY SINGLE DOCUMENT FROM THE CONTEXT
+            2. DO NOT SUMMARIZE OR TRUNCATE THE LIST
+            3. Count the total number of episodes before responding
+            4. Verify your count matches the number of documents in the context
+            5. Start your response with "### Episodes matching your query ([X] total episodes)" where X is the total count
+            6. List every episode with a bullet point
+            7. If the episode name ends with ..txt, you should remove that. Also remove the "Thinking Poker Daily Exx" from the name.
+            8. Before responding, count that your list matches TOTAL_EPISODES exactly
+            9. If your count doesn't match, reprocess the entire context
+            
+            Your response format must be:
 
-		### Episodes with tag 'stack size'
-		- Episode 1: Andrew and Carlos talk bubble play
-		- Episode 8: Carlos and Nate face a preflop jam with AQ
-		- Episode 17: Carlos helps Andrew with a bubble spot
+            ### Episodes matching your query ([X] total episodes)
+            - Episode [Number]: [Title]
+            - Episode [Number]: [Title]
+            [continue until ALL episodes are listed]
+            
+        The 'X' number SHOULD ALWAYS be consistent with the number of episodes that the list has.
+		Never summarize or truncate the list. Always include every single episode from the context.
 
-		Include EVERY episode that you have access to in your response.
+        If no matches are found, inform the user that there are no episodes with the specified tag(s). DO NOT MAKE STUFF UP.
+        If you receive 0 documents, format your response as follows:
 
-		c. If no matches are found, inform the user that there are no episodes with the specified tag(s).
+        ### Episodes matching your query
+		No episodes could be found with the specified tag(s).
     
     3. Listing the tags for a specific episode:
-        If asked to provide the tags of a specific podcast episode, you should return the tags that you see in the metadata of the document.
-        The document has already been filtered down to the correct one, so you should just list the tags in bullet points. For example:
+        If asked to provide the tags of a specific podcast episode:
+        a. Find the document for the requested episode in the context
+        b. Extract ALL tags from the metadata
+        c. List them in bullet points, example:
 
         ### Tags for Episode 34
         - tournament
         - carlos
         - draw
-        - bet size
-        - bluffing
-        - preflop
-        - stack size
-        - should i call
+        [etc.]
 
-	General guidelines:
-	- Be polite and professional in your responses.
-	- If you don't have information to answer a question, clearly state that you don't know or don't have that information.
-	- Do not make up or invent information that is not provided to you.
-	- Use the context information when appropriate to provide additional details or background.
+    4. Listing the existing tags:
+        If asked to provide a list of the existing tags, return this list in bullet points:
+        
+        ### Tags
+        [List of tags]
+
+	Critical Requirements:
+	- NEVER skip or omit any documents from your response
+	- ALWAYS verify that the number of episodes in your response matches the number of documents in the context
+	- NEVER make stuff up or invent information that is not provided to you
+	- If you're listing episodes, count them before and after formatting your response to ensure none were missed
+	- Do not summarize or truncate lists of episodes
+	- If you don't have information to answer a question, clearly state that
 
 	Now, please process the following question from the user and respond accordingly:
   {question}
@@ -105,15 +125,16 @@ export async function POST(request: Request) {
             sessionId
         })
 
-        const retriever = async (query: string) => enhancedRetriever(vectorStore, query);
+        const withMessageHistory = await getRunnableWithMessageHistory(
+            chatHistory,
+            STANDALONE_SYSTEM_PROMPT,
+            model,
+            vectorStore,
+            prompt,
+            RAG_SYSTEM_PROMPT
+        );
         
-        const questionRunnable = getRunnableFromProperties(STANDALONE_PROMPT_TEMPLATE, model)
-        const retrieverRunnable = assignRetrieverToRunnable(questionRunnable, retriever)
-        const ragRunnable = getRunnableFromProperties(RAG_SYSTEM_PROMPT, model, retrieverRunnable)
-        
-        const RunnableWithMessageHistory = getRunnableWithMessageHistory(ragRunnable, chatHistory)
-        
-        const stream = await RunnableWithMessageHistory.stream({ question: prompt }, { configurable: { sessionId: sessionId } })
+        const stream = await withMessageHistory.stream({ question: prompt }, { configurable: { sessionId: sessionId } })
 
         return new NextResponse(stream, {
             headers: {

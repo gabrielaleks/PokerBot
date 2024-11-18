@@ -1,53 +1,63 @@
-import { BaseListChatMessageHistory } from "@langchain/core/chat_history"
 import { StringOutputParser } from "@langchain/core/output_parsers"
 import { ChatPromptTemplate, MessagesPlaceholder } from "@langchain/core/prompts"
 import {
-  Runnable,
-  RunnablePassthrough,
   RunnableSequence,
   RunnableWithMessageHistory
 } from "@langchain/core/runnables"
-import { formatDocumentsAsString } from "langchain/util/document"
-import { Document } from '@langchain/core/documents';
+import { MongoDBChatMessageHistory } from "@langchain/mongodb"
+import { VectorStore } from "@langchain/core/vectorstores"
+import { fetchDocumentsFromVectorStore } from "./vectorStore"
 
-export function getRunnableFromProperties(
-  prompt: string,
+export async function getRunnableWithMessageHistory(
+  chatHistory: MongoDBChatMessageHistory,
+  standaloneSystemPrompt: string,
   model: any,
-  pastRunnable?: Runnable
-): RunnableSequence {
-  const promptTemplate = ChatPromptTemplate.fromMessages([
-    ["system", prompt],
-    new MessagesPlaceholder("chat_history"),
+  vectorStore: VectorStore,
+  prompt: string,
+  ragSystemPrompt: string
+) {
+  const standaloneQuestionPrompt = ChatPromptTemplate.fromMessages([
+    ["system", standaloneSystemPrompt],
+    new MessagesPlaceholder("history"),
     ["human", "{question}"],
-  ])
+  ]);
 
-  const runnableSequence = pastRunnable
-    ? RunnableSequence.from([pastRunnable, promptTemplate, model, new StringOutputParser()])
-    : RunnableSequence.from([promptTemplate, model, new StringOutputParser()]);
+  const questionChain = RunnableSequence.from([
+    {
+      question: (input) => input.question,
+      history: (input) => input.history,
+    },
+    standaloneQuestionPrompt,
+    model,
+    new StringOutputParser(),
+  ]);
 
-  return runnableSequence;
-}
+  const documents = await fetchDocumentsFromVectorStore(vectorStore, prompt);
+  const formattedContext = documents.map(doc => doc.pageContent).join('\n---\n');
 
-export function assignRetrieverToRunnable(
-  chain: RunnableSequence,
-  retriever: (query: string) => Promise<Document[]>
-): RunnablePassthrough<any> {
-  return RunnablePassthrough.assign({
-    context: async (input: any) => {
-      const docs = await retriever(input.question);
-      return formatDocumentsAsString(docs);
-    }
-  })
-}
+  const ragPrompt = ChatPromptTemplate.fromMessages([
+    ["system", ragSystemPrompt],
+    new MessagesPlaceholder("history"),
+    ["human", "{question}"],
+  ]);
 
-export function getRunnableWithMessageHistory(
-  chain: any,
-  chatHistory: BaseListChatMessageHistory
-): RunnableWithMessageHistory<any, any> {
-  return new RunnableWithMessageHistory({
-    runnable: chain,
+  const ragChain = RunnableSequence.from([
+    {
+      question: questionChain,
+      context: async () => formattedContext,
+      history: (input) => input.history,
+    },
+    ragPrompt,
+    model,
+    new StringOutputParser(),
+  ]);
+
+  const withMessageHistory = new RunnableWithMessageHistory({
+    runnable: ragChain,
     getMessageHistory: () => chatHistory,
     inputMessagesKey: "question",
-    historyMessagesKey: "chat_history"
-  })
+    historyMessagesKey: "history",
+  });
+
+  return withMessageHistory;
 }
