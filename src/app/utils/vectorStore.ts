@@ -19,125 +19,209 @@ export function initializeMongoDBVectorStore(
 	});
 }
 
-export async function fetchDocumentsFromVectorStore(
-	vectorStore: VectorStore,
-	query: string,
-	k: number = 50
-): Promise<Document[]> {
+const MONGO_QUERY_TEMPLATE = `
+You are a MongoDB query generator. Your task is to convert natural language queries about podcast episodes into MongoDB query objects.
+
+Available fields in the documents:
+- episode_number (number)
+- episode_tags (array of strings)
+- episode_name (string)
+
+Types of requests:
+1. "searchWithTags" - When user wants to find episodes with specific tags
+2. "summary" - When user wants to get the summary of specific episode(s)
+3. "listOfTags" - When user wants to see all available tags
+4. "tagsInEpisode" - When user wants to see tags for specific episode(s)
+
+Available tags: ${PRE_DEFINED_TAGS}
+
+Rules for query generation:
+1. Support complex logical operations (AND, OR, NOT)
+2. Handle numerical comparisons for episode numbers
+3. Support array operations for tags
+4. Return the appropriate type of request
+
+Examples:
+1. Query: "Show me episodes about flop or river"
+   Response: {{
+     "query": {{ "episode_tags": {{ "$in": ["flop", "river"] }} }},
+     "typeOfRequest": "searchWithTags"
+   }}
+
+2. Query: "What's the summary of episode 123?"
+   Response: {{
+     "query": {{ "episode_number": 123 }},
+     "typeOfRequest": "summary"
+   }}
+
+3. Query: "What tags are available?"
+   Response: {{
+     "query": {{}},
+     "typeOfRequest": "listOfTags"
+   }}
+	 
+4. Query: "Show me episodes about flop and river"
+   Response: {{
+     "query": {{ 
+       "$and": [
+         {{ "episode_tags": "flop" }},
+         {{ "episode_tags": "river" }}
+       ]
+     }},
+     "typeOfRequest": "searchWithTags"
+   }}
+
+5. Query: "Show me episodes about flop but not river"
+   Response: {{
+     "query": {{
+       "$and": [
+         {{ "episode_tags": "flop" }},
+         {{ "episode_tags": {{ "$ne": "river" }} }}
+       ]
+     }},
+     "typeOfRequest": "searchWithTags"
+   }}
+
+6. Query: "What tags are in episode 456?"
+   Response: {{
+     "query": {{ "episode_number": 456 }},
+     "typeOfRequest": "tagsInEpisode"
+   }}
+
+7. Query: "Show me tags for episodes 100, 200, and 300"
+   Response: {{
+     "query": {{ "episode_number": {{ "$in": [100, 200, 300] }} }},
+     "typeOfRequest": "tagsInEpisode"
+   }}
+
+8. Query: "Show me episodes between 100 and 200 that talk about bubble"
+   Response: {{
+     "query": {{
+       "$and": [
+         {{ "episode_number": {{ "$gte": 100, "$lte": 200 }} }},
+         {{ "episode_tags": "bubble" }}
+       ]
+     }},
+     "typeOfRequest": "searchWithTags"
+   }}
+
+Now, generate a MongoDB query for the following request:
+{query}
+
+Respond in JSON format with exactly this structure:
+{{
+  "query": [MongoDB query object],
+  "typeOfRequest": [string with type of request]
+}}
+`;
+
+async function generateMongoQuery(query: string): Promise<any> {
 	const llm = new ChatOpenAI({
-		model: "gpt-4o",
-		openAIApiKey: process.env.OPENAI_API_KEY,
+		model: "gpt-4",
 		temperature: 0,
 	});
-	const template = `
-        Analyze the following context and query:
-        {query}
-        
-        1. IF the user mentions episode numbers, extract all episode numbers mentioned.
-        2. IF the user mentions episode tags directly or describes concepts that map to our tags, extract those tags.
-        3. IF the user's query implies that ALL mentioned concepts should be present (e.g., "episodes about X and Y" or "episodes that discuss X while doing Y"),
-           set requireAllTags to true. Otherwise (e.g., "episodes about X or Y"), set it to false.
-        4. IF the user asks about which episodes fit a certain condition, you should see if that condition fits one (or more) of the pre-existing tags.
-           If it does, return that tag/tags. If not, return empty.
-           See list of possible tags below. REFRAIN to this list.
-        5. You should return the type of request made by the user. Choose from this list:
-            - "summary" (if the user request is to summarize episodes)
-            - "listOfTags" (if the user request is to provide a list of existing tags)
-            - "tagsInEpisode" (if the user request is to provide list of tags for a specific episode)
-            - "searchWithTags" (if the user request is to find episodes that contain a specific tag or set of tags)
-            - "other" (if the user request doesn't fit the previous cases)
 
-           ${PRE_DEFINED_TAGS}
-           
-        5. IF the user's message doesn't fit any of the conditions above, return an empty json.
-
-        Respond in JSON format:
-        {{
-            "episodeNumbers": [list of numbers or empty array],
-            "episodeTags": [list of identified tags or empty array],
-            "requireAllTags": boolean,
-            "typeOfRequest": [string with type of request]
-        }}
-    `;
-
-	const prompt = ChatPromptTemplate.fromTemplate(template);
+	const prompt = ChatPromptTemplate.fromTemplate(MONGO_QUERY_TEMPLATE);
 	const outputParser = new JsonOutputParser();
 	const llmChain = prompt.pipe(llm).pipe(outputParser);
-	const { episodeNumbers, episodeTags, requireAllTags, typeOfRequest } = await llmChain.invoke({ query });
 
-	let preFilter: any = {};
-	const lowercaseTags = episodeTags.map((tag: string) => tag.toLowerCase());
+	return await llmChain.invoke({ query });
+}
 
-	if (episodeNumbers.length > 0) {
-		preFilter.episode_number = { "$in": episodeNumbers };
-	}
+export async function fetchDocumentsFromVectorStore(
+  vectorStore: VectorStore,
+  query: string,
+  k: number = 100
+): Promise<Document[]> {
+  const { query: mongoQuery, typeOfRequest } = await generateMongoQuery(query);
 
-	if (episodeTags.length > 0) {
-		if (requireAllTags && episodeTags.length > 1) {
-			// Use $and with multiple $in conditions to simulate AND logic
-			preFilter["$and"] = lowercaseTags.map((tag: string) => ({
-				episode_tags: { "$in": [tag] }
-			}));
-		} else {
-			// Use $in for OR logic
-			preFilter.episode_tags = { "$in": lowercaseTags };
-		}
-	}
+  console.log(`=== MongoDB Query Debug ===\nOriginal Query: ${query}\nType of Request: ${typeOfRequest}\nGenerated MongoDB Query:\n${JSON.stringify(mongoQuery, null, 2)}\n========================`);
 
-	let results: Document[] = [];
+  let results: Document[] = [];
 
-	if (Object.keys(preFilter).length > 0) {
-		results = await vectorStore.similaritySearch(query, k, { preFilter });
-	} else {
-		results = await vectorStore.similaritySearch(query, 4);
-	}
-
-  if (typeOfRequest == "searchWithTags") {
-    results = results.map((result, index) => {
-      const { metadata } = result;
-      // Create a more structured format
-      return new Document({
-        pageContent: `EPISODE_ENTRY_${index + 1}:\nNumber: ${metadata.episode_number}\nTitle: ${metadata.episode_name}`,
-        metadata: {
-          episode_number: metadata.episode_number,
-          episode_name: metadata.episode_name,
-          episode_tags: metadata.episode_tags || [],
-        }
-      });
+	// Get documents based on the query
+  if (Object.keys(mongoQuery).length > 0) {
+    results = await vectorStore.similaritySearch(query, k, { 
+      preFilter: mongoQuery 
     });
+  } else {
+    results = await vectorStore.similaritySearch(query, 4);
+  }
 
-    // Sort by episode number
-    results.sort((a, b) =>
-      (a.metadata.episode_number || 0) - (b.metadata.episode_number || 0)
-    );
-    
-    const countDocument = new Document({
-      pageContent: `TOTAL_EPISODES: ${results.length} 
+  // Process the results based on typeOfRequest
+  switch (typeOfRequest) {
+    case "searchWithTags":
+      results = results.map((result, index) => {
+        const { metadata } = result;
+        return new Document({
+          pageContent: `EPISODE_ENTRY_${index + 1}:
+Number: ${metadata.episode_number}
+Title: ${metadata.episode_name}`,
+          metadata: {
+            episode_number: metadata.episode_number,
+            episode_name: metadata.episode_name,
+            episode_tags: metadata.episode_tags || [],
+          }
+        });
+      });
+
+      // Sort by episode number
+      results.sort((a, b) =>
+        (a.metadata.episode_number || 0) - (b.metadata.episode_number || 0)
+      );
+      
+      // Add count document
+      const countDocument = new Document({
+        pageContent: `TOTAL_EPISODES: ${results.length}
 !!!IMPORTANT!!! YOU MUST LIST ALL ${results.length} EPISODES IN YOUR RESPONSE
-!!!IMPORTANT!!! DO NOT SKIP ANY EPISODES`,
-      metadata: {}
-		});
-    
-    results.unshift(countDocument);
-  } else if (typeOfRequest == "summary") {
-		results = results.map(result => {
-			const tags = result.metadata.episode_tags || [];
-			const tagString = tags.length > 0 ? `Tags: ${tags.join(', ')}` : '';
-			result.pageContent = `${result.pageContent}\n\n${tagString}`;
-			return result;
-		});
-	} else if (typeOfRequest == "tagsInEpisode") {
-		results = results.map(result => {
-			result.pageContent = result.metadata.episode_tags;
-			return result;
-		});
-	} else if (typeOfRequest == "listOfTags") {
-		const documentWithTags = new Document({
-			pageContent: PRE_DEFINED_TAGS
-		});
+!!!IMPORTANT!!! DO NOT SKIP ANY EPISODES
+---`,
+        metadata: {}
+      });
+      
+      results.unshift(countDocument);
+      break;
 
-		results = [documentWithTags];
-	}
+    case "summary":
+      results = results.map(result => {
+        const { metadata } = result;
+        return new Document({
+          pageContent: result.pageContent,
+          metadata: {
+            episode_number: metadata.episode_number,
+            episode_name: metadata.episode_name,
+            episode_tags: metadata.episode_tags || [],
+          }
+        });
+      });
+      break;
 
-	return results;
+    case "listOfTags":
+      results = [
+        new Document({
+          pageContent: PRE_DEFINED_TAGS,
+          metadata: {}
+        })
+      ];
+      break;
+
+    case "tagsInEpisode":
+      results = results.map(result => {
+        const { metadata } = result;
+        return new Document({
+          pageContent: `Tags for Episode ${metadata.episode_number}:\n${metadata.episode_tags?.join('\n')}`,
+          metadata: {
+            episode_number: metadata.episode_number,
+            episode_name: metadata.episode_name,
+            episode_tags: metadata.episode_tags || [],
+          }
+        });
+      });
+      break;
+
+    default:
+      break;
+  }
+
+  return results;
 }
